@@ -1,0 +1,50 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  name      String?
+  surname   String?
+  role      Role     @default(USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  platformsCreated Platform[] @relation("UserCreatedPlatforms")
+}
+
+enum PlatformStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Platform {
+  id          Int            @id @default(autoincrement())
+  name        String
+  slug        String         @unique
+  description String?
+  websiteUrl  String?
+  logoUrl     String?
+  status      PlatformStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  createdById Int?
+  createdBy   User? @relation("UserCreatedPlatforms", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([createdAt])
+}
