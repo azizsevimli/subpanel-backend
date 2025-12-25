@@ -9,7 +9,7 @@ const router = express.Router();
 router.get("/", authMiddleware, adminMiddleware, platformAdminController.list);
 router.get("/:id", authMiddleware, adminMiddleware, platformAdminController.getById);
 router.post("/", authMiddleware, adminMiddleware, platformAdminController.create);
-router.patch("/:id", authMiddleware, adminMiddleware, platformAdminController.update);
+router.patch("/:id", authMiddleware, adminMiddleware, platformAdminController.updateById);
 router.delete("/:id", authMiddleware, adminMiddleware, platformAdminController.remove);
 
 module.exports = router;

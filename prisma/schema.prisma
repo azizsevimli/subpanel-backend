@@ -45,6 +45,42 @@ model Platform {
   createdById Int?
   createdBy   User? @relation("UserCreatedPlatforms", fields: [createdById], references: [id], onDelete: SetNull)
 
+  fields      PlatformField[]
+
   @@index([status])
   @@index([createdAt])
+}
+
+enum PlatformFieldType {
+  TEXT
+  NUMBER
+  EMAIL
+  PASSWORD
+  SELECT
+  MULTISELECT
+  CHECKBOX
+  TEXTAREA
+  DATE
+}
+
+model PlatformField {
+  id           Int      @id @default(autoincrement())
+
+  platformId   Int
+  platform     Platform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+
+  key          String
+  label        String
+  type         PlatformFieldType
+  required     Boolean  @default(false)
+
+  optionsJson  Json?
+  order        Int      @default(0)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([platformId, key])
+  @@index([platformId])
+  @@index([order])
 }
