@@ -13,7 +13,7 @@ enum Role {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
+  id        String   @id @default(uuid()) @db.Uuid
   email     String   @unique
   password  String
   name      String?
@@ -23,6 +23,9 @@ model User {
   updatedAt DateTime @updatedAt
 
   platformsCreated Platform[] @relation("UserCreatedPlatforms")
+
+  // Opposite relation (Subscription.user)
+  subscriptions Subscription[]
 }
 
 enum PlatformStatus {
@@ -31,7 +34,7 @@ enum PlatformStatus {
 }
 
 model Platform {
-  id          Int            @id @default(autoincrement())
+  id          String         @id @default(uuid()) @db.Uuid
   name        String
   slug        String         @unique
   description String?
@@ -42,10 +45,13 @@ model Platform {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  createdById Int?
-  createdBy   User? @relation("UserCreatedPlatforms", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById String? @db.Uuid
+  createdBy   User?   @relation("UserCreatedPlatforms", fields: [createdById], references: [id], onDelete: SetNull)
 
-  fields      PlatformField[]
+  fields PlatformField[]
+
+  // Opposite relation (Subscription.platform)
+  subscriptions Subscription[]
 
   @@index([status])
   @@index([createdAt])
@@ -64,23 +70,66 @@ enum PlatformFieldType {
 }
 
 model PlatformField {
-  id           Int      @id @default(autoincrement())
+  id String @id @default(uuid()) @db.Uuid
 
-  platformId   Int
-  platform     Platform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  platformId String   @db.Uuid
+  platform   Platform @relation(fields: [platformId], references: [id], onDelete: Cascade)
 
-  key          String
-  label        String
-  type         PlatformFieldType
-  required     Boolean  @default(false)
+  key      String
+  label    String
+  type     PlatformFieldType
+  required Boolean           @default(false)
 
-  optionsJson  Json?
-  order        Int      @default(0)
+  optionsJson Json?
+  order       Int   @default(0)
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Opposite relation (SubscriptionFieldValue.platformField)
+  subscriptionValues SubscriptionFieldValue[]
 
   @@unique([platformId, key])
   @@index([platformId])
   @@index([order])
+}
+
+model Subscription {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  platformId String   @db.Uuid
+  platform   Platform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  values SubscriptionFieldValue[]
+
+  // ✅ KALDIRILDI:
+  // @@unique([userId, platformId])
+
+  @@index([userId])
+  @@index([platformId])
+}
+
+model SubscriptionFieldValue {
+  id String @id @default(uuid()) @db.Uuid
+
+  subscriptionId String       @db.Uuid
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  platformFieldId String        @db.Uuid
+  platformField   PlatformField @relation(fields: [platformFieldId], references: [id], onDelete: Cascade)
+
+  valueJson Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([subscriptionId, platformFieldId])
+  @@index([subscriptionId])
+  @@index([platformFieldId])
 }

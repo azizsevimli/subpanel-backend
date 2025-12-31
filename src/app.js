@@ -11,6 +11,8 @@ const adminPlatformRoutes = require("./routes/admin.platforms");
 const authMiddleware = require("./middlewares/authMiddleware");
 const path = require("path");
 const adminUploadRoutes = require("./routes/admin.uploads");
+const platformsPublicRoutes = require("./routes/platforms");
+const subscriptionRoutes = require("./routes/subscriptions");
 
 const app = express();
 
@@ -31,6 +33,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin/platforms", adminPlatformRoutes);
 app.use("/api/admin/uploads", adminUploadRoutes);
+app.use("/api/platforms", platformsPublicRoutes);
+app.use("/api/subscriptions", subscriptionRoutes);
 
 app.get("/api/health", async (req, res) => {
     try {

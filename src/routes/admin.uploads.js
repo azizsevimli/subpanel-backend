@@ -5,7 +5,6 @@ const upload = require("../config/multer");
 
 const router = express.Router();
 
-// POST /api/admin/uploads/logo
 router.post(
     "/logo",
     authMiddleware,

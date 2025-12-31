@@ -236,7 +236,7 @@ async function updatePlatform(id, { name, slug, description, websiteUrl, logoUrl
     if (typeof status === "string") data.status = status;
 
     return prisma.platform.update({
-        where: { id: Number(id) },
+        where: { id: id },
         data,
         select: {
             id: true,
@@ -255,7 +255,7 @@ async function updatePlatform(id, { name, slug, description, websiteUrl, logoUrl
 async function deletePlatform(id) {
     // Şimdilik hard delete. İstersen soft delete'e çevirebiliriz.
     return prisma.platform.delete({
-        where: { id: Number(id) },
+        where: { id: id },
         select: { id: true },
     });
 }

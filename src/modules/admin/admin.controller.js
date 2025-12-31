@@ -24,7 +24,6 @@ async function listUsers(req, res) {
     }
 }
 
-// YENİ: Admin tarafından yeni admin oluşturma
 async function createAdmin(req, res) {
     try {
         const { email, password, name, surname } = req.body;
@@ -58,7 +57,6 @@ async function createAdmin(req, res) {
     } catch (err) {
         console.error("Admin createAdmin error:", err);
 
-        // Prisma unique email hatası
         if (err.code === "P2002") {
             return res
                 .status(409)

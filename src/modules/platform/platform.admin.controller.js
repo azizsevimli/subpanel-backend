@@ -1,4 +1,5 @@
 const platformService = require("./platform.admin.service");
+const isUuid = require("../../utils/isUuid");
 
 function normalizeKey(input) {
     return String(input || "")
@@ -149,9 +150,9 @@ async function list(req, res) {
 
 async function getById(req, res) {
     try {
-        const id = Number(req.params.id);
-        if (!Number.isFinite(id) || id <= 0) {
-            return res.status(400).json({ message: "Geçersiz platform id." });
+        const id = req.params.id;
+        if (!isUuid(id)) {
+            return res.status(400).json({ message: "Geçersiz platform ID." });
         }
 
         const platform = await platformService.getPlatformById(id);
@@ -168,12 +169,11 @@ async function getById(req, res) {
 
 async function updateById(req, res) {
     try {
-        const id = Number(req.params.id);
-        if (!Number.isFinite(id) || id <= 0) {
-            return res.status(400).json({ message: "Geçersiz platform id." });
+        const id = req.params.id;
+        if (!isUuid(id)) {
+            return res.status(400).json({ message: "Geçersiz platform ID." });
         }
 
-        // platform var mı kontrol
         const existing = await platformService.getPlatformById(id);
         if (!existing) {
             return res.status(404).json({ message: "Platform bulunamadı." });
@@ -301,6 +301,10 @@ async function update(req, res) {
 async function remove(req, res) {
     try {
         const { id } = req.params;
+
+        if (!isUuid(id)) {
+            return res.status(400).json({ message: "Geçersiz platform ID." });
+        }
 
         await platformService.deletePlatform(id);
         return res.status(200).json({ message: "Platform silindi." });
