@@ -25,7 +25,8 @@ model User {
   platformsCreated Platform[] @relation("UserCreatedPlatforms")
 
   // Opposite relation (Subscription.user)
-  subscriptions Subscription[]
+  subscriptions       Subscription[]
+  passwordResetTokens PasswordResetToken[]
 }
 
 enum PlatformStatus {
@@ -94,6 +95,17 @@ model PlatformField {
   @@index([order])
 }
 
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  CANCELED
+}
+
+enum RepeatUnit {
+  MONTH
+  YEAR
+}
+
 model Subscription {
   id String @id @default(uuid()) @db.Uuid
 
@@ -103,16 +115,29 @@ model Subscription {
   platformId String   @db.Uuid
   platform   Platform @relation(fields: [platformId], references: [id], onDelete: Cascade)
 
+  status SubscriptionStatus @default(ACTIVE)
+
+  // ✅ tekrar sistemi
+  repeatUnit     RepeatUnit @default(MONTH)
+  repeatInterval Int        @default(1)
+
+  // ✅ startDate artık zorunlu
+  startDate DateTime
+  endDate   DateTime?
+
+  amount   Decimal? @db.Decimal(10, 2)
+  currency String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   values SubscriptionFieldValue[]
 
-  // ✅ KALDIRILDI:
-  // @@unique([userId, platformId])
-
   @@index([userId])
   @@index([platformId])
+  @@index([status])
+  @@index([repeatUnit])
+  @@index([startDate])
 }
 
 model SubscriptionFieldValue {
@@ -132,4 +157,18 @@ model SubscriptionFieldValue {
   @@unique([subscriptionId, platformFieldId])
   @@index([subscriptionId])
   @@index([platformFieldId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }

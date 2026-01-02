@@ -1,17 +1,49 @@
+// src/modules/subscription/subscription.controller.js
 const service = require("./subscription.service");
 
 async function create(req, res) {
   try {
     const userId = req.user.id;
-    const { platformId, values } = req.body;
 
-    if (!platformId) return res.status(400).json({ message: "platformId zorunludur." });
-    if (!Array.isArray(values)) return res.status(400).json({ message: "values bir dizi olmalıdır." });
+    // ✅ Yeni sistem: billingPeriod + billingDay yok
+    const {
+      platformId,
+      values,
+      status,
+      repeatUnit,       // "MONTH" | "YEAR"
+      repeatInterval,   // 1..N
+      startDate,        // zorunlu
+      endDate,
+      amount,
+      currency,
+    } = req.body;
+
+    if (!platformId) {
+      return res.status(400).json({ message: "platformId zorunludur." });
+    }
+
+    if (!Array.isArray(values)) {
+      return res.status(400).json({ message: "values bir dizi olmalıdır." });
+    }
+
+    // ✅ startDate artık temel
+    if (!startDate) {
+      return res.status(400).json({ message: "startDate zorunludur." });
+    }
 
     const created = await service.createSubscription({
       userId,
       platformId: String(platformId).trim(),
       values,
+      tracking: {
+        status,
+        repeatUnit,
+        repeatInterval,
+        startDate,
+        endDate,
+        amount,
+        currency,
+      },
     });
 
     return res.status(201).json({ subscription: created });
@@ -30,8 +62,18 @@ async function create(req, res) {
       return res.status(400).json({ message: "Platform aktif değil." });
     }
 
-    if (err.code === "REQUIRED_FIELD_MISSING") {
-      return res.status(400).json({ message: `Zorunlu alan eksik: ${err.meta?.key || ""}`.trim() });
+    if (err.code === "START_DATE_REQUIRED") {
+      return res.status(400).json({ message: "startDate zorunludur." });
+    }
+
+    // service bazen REQUIRED_FIELD_MISSING:key şeklinde atıyordu, bazen meta ile
+    if (String(err.code || "").startsWith("REQUIRED_FIELD_MISSING")) {
+      const keyFromCode = String(err.message || "").includes(":")
+        ? String(err.message).split(":")[1]
+        : "";
+
+      const key = err.meta?.key || keyFromCode || err.meta?.label || "";
+      return res.status(400).json({ message: `Zorunlu alan eksik: ${key}`.trim() });
     }
 
     return res.status(500).json({ message: "Subscription oluşturulurken hata oluştu." });
@@ -41,9 +83,7 @@ async function create(req, res) {
 async function listMine(req, res) {
   try {
     const userId = req.user.id;
-
     const items = await service.listMySubscriptions(userId);
-
     return res.status(200).json({ items });
   } catch (err) {
     console.error("List subscriptions error:", err);
@@ -70,16 +110,40 @@ async function updateMineById(req, res) {
   try {
     const userId = req.user.id;
     const id = String(req.params.id || "").trim();
-    const { values } = req.body;
+
+    const {
+      values,
+      status,
+      repeatUnit,
+      repeatInterval,
+      startDate,
+      endDate,
+      amount,
+      currency,
+    } = req.body;
 
     if (!Array.isArray(values)) {
       return res.status(400).json({ message: "values bir dizi olmalıdır." });
+    }
+
+    // ✅ yeni sistemde startDate önemli; update'te de zorunlu tutuyoruz
+    if (!startDate) {
+      return res.status(400).json({ message: "startDate zorunludur." });
     }
 
     const updated = await service.updateMySubscription({
       userId,
       subscriptionId: id,
       values,
+      tracking: {
+        status,
+        repeatUnit,
+        repeatInterval,
+        startDate,
+        endDate,
+        amount,
+        currency,
+      },
     });
 
     return res.status(200).json({ subscription: updated });
@@ -90,8 +154,13 @@ async function updateMineById(req, res) {
       return res.status(404).json({ message: "Subscription bulunamadı." });
     }
 
+    if (err.code === "START_DATE_REQUIRED") {
+      return res.status(400).json({ message: "startDate zorunludur." });
+    }
+
     if (err.code === "REQUIRED_FIELD_MISSING") {
-      return res.status(400).json({ message: `Zorunlu alan eksik: ${err.meta?.label || ""}`.trim() });
+      const labelOrKey = err.meta?.label || err.meta?.key || "";
+      return res.status(400).json({ message: `Zorunlu alan eksik: ${labelOrKey}`.trim() });
     }
 
     return res.status(500).json({ message: "Subscription güncellenirken hata oluştu." });
@@ -122,5 +191,5 @@ module.exports = {
   listMine,
   getMineById,
   updateMineById,
-  deleteMineById
+  deleteMineById,
 };

@@ -3,16 +3,20 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const cookieParser = require("cookie-parser");
+const path = require("path");
 
 const prisma = require("./config/prisma");
+const authMiddleware = require("./middlewares/authMiddleware");
 const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
 const adminPlatformRoutes = require("./routes/admin.platforms");
-const authMiddleware = require("./middlewares/authMiddleware");
-const path = require("path");
 const adminUploadRoutes = require("./routes/admin.uploads");
 const platformsPublicRoutes = require("./routes/platforms");
 const subscriptionRoutes = require("./routes/subscriptions");
+const dashboardRoutes = require("./routes/dashboard");
+const calendarRoutes = require("./routes/calendar");
+const passwordRoutes = require("./routes/password");
+const settingsRoutes = require("./routes/settings");
 
 const app = express();
 
@@ -35,6 +39,10 @@ app.use("/api/admin/platforms", adminPlatformRoutes);
 app.use("/api/admin/uploads", adminUploadRoutes);
 app.use("/api/platforms", platformsPublicRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
+app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/calendar", calendarRoutes);
+app.use("/api/password", passwordRoutes);
+app.use("/api/settings", settingsRoutes);
 
 app.get("/api/health", async (req, res) => {
     try {
