@@ -17,6 +17,7 @@ const dashboardRoutes = require("./routes/dashboard");
 const calendarRoutes = require("./routes/calendar");
 const passwordRoutes = require("./routes/password");
 const settingsRoutes = require("./routes/settings");
+const adminSettingsRoutes = require("./routes/admin.settings");
 
 const app = express();
 
@@ -43,6 +44,7 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/calendar", calendarRoutes);
 app.use("/api/password", passwordRoutes);
 app.use("/api/settings", settingsRoutes);
+app.use("/api/admin/settings", adminSettingsRoutes);
 
 app.get("/api/health", async (req, res) => {
     try {

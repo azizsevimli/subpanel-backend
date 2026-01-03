@@ -12,27 +12,58 @@ async function getProfile(userId) {
     });
 }
 
-async function updateProfile(userId, { name, surname, email }) {
+async function updateProfile(userId, { name, surname, email, currentPassword }) {
     const data = {};
 
     if (name !== undefined) data.name = String(name || "").trim() || null;
     if (surname !== undefined) data.surname = String(surname || "").trim() || null;
 
+    // Email değişikliği varsa güvenlik kontrolü:
     if (email !== undefined) {
-        const e = normalizeEmail(email);
-        if (!e) {
+        const nextEmail = normalizeEmail(email);
+        if (!nextEmail) {
             const err = new Error("INVALID_EMAIL");
             err.code = "INVALID_EMAIL";
             throw err;
         }
-        data.email = e;
+
+        // Mevcut kullanıcıyı çek (mevcut email + şifre doğrulama için)
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { id: true, email: true, password: true },
+        });
+
+        if (!user) {
+            const e = new Error("NOT_FOUND");
+            e.code = "NOT_FOUND";
+            throw e;
+        }
+
+        // Aynı email'e güncellenmeye çalışılıyorsa şifre istemeden geçebiliriz
+        // ama istersen yine de isteyebilirsin. MVP: aynıysa set etmiyoruz.
+        if (user.email !== nextEmail) {
+            if (!currentPassword) {
+                const e = new Error("PASSWORD_CONFIRM_REQUIRED");
+                e.code = "PASSWORD_CONFIRM_REQUIRED";
+                throw e;
+            }
+
+            const ok = await bcrypt.compare(String(currentPassword), user.password);
+            if (!ok) {
+                const e = new Error("INVALID_CURRENT_PASSWORD");
+                e.code = "INVALID_CURRENT_PASSWORD";
+                throw e;
+            }
+
+            data.email = nextEmail;
+        }
     }
 
     try {
         return await prisma.user.update({
             where: { id: userId },
             data,
-            select: { id: true, email: true, name: true, surname: true, role: true },
+            select: { id: true, email: true, name: true, surname: true, role: true, updatedAt: true },
         });
     } catch (err) {
         // Prisma unique error
