@@ -9,6 +9,7 @@ function slugify(input) {
         .replace(/-+/g, "-");
 }
 
+// PlatformField için (extra alanlar)
 function normalizeKey(input) {
     return String(input || "")
         .trim()
@@ -22,15 +23,24 @@ function isOptionType(type) {
     return type === "SELECT" || type === "MULTISELECT";
 }
 
+function normalizePlanName(input) {
+    return String(input || "").trim();
+}
+
+function normalizeOrderOrDefault(v, def) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : def;
+}
+
+/**
+ * ✅ Admin list: platform + basic info + plansCount
+ */
 async function listPlatforms({ search, status, page = 1, limit = 20 }) {
     const take = Math.min(Number(limit) || 20, 100);
     const skip = (Number(page) - 1) * take;
 
     const where = {};
-
-    if (status) {
-        where.status = status; // "ACTIVE" | "INACTIVE"
-    }
+    if (status) where.status = status;
 
     if (search) {
         where.OR = [
@@ -59,13 +69,18 @@ async function listPlatforms({ search, status, page = 1, limit = 20 }) {
                 createdBy: {
                     select: { id: true, email: true, name: true, surname: true, role: true },
                 },
+                _count: { select: { plans: true } },
             },
         }),
         prisma.platform.count({ where }),
     ]);
 
     return {
-        items,
+        items: items.map((p) => ({
+            ...p,
+            plansCount: p._count?.plans ?? 0,
+            _count: undefined,
+        })),
         meta: {
             total,
             page: Number(page),
@@ -75,6 +90,9 @@ async function listPlatforms({ search, status, page = 1, limit = 20 }) {
     };
 }
 
+/**
+ * ✅ Admin detail: platform + plans + fields
+ */
 async function getPlatformById(id) {
     return prisma.platform.findUnique({
         where: { id },
@@ -88,6 +106,18 @@ async function getPlatformById(id) {
             status: true,
             createdAt: true,
             updatedAt: true,
+            plans: {
+                orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+                select: {
+                    id: true,
+                    platformId: true,
+                    name: true,
+                    isActive: true,
+                    order: true,
+                    createdAt: true,
+                    updatedAt: true,
+                },
+            },
             fields: {
                 orderBy: { order: "asc" },
                 select: {
@@ -134,14 +164,115 @@ async function createPlatform({ name, slug, description, websiteUrl, logoUrl, st
     });
 }
 
-async function updatePlatformWithFieldsById({ id, platform, fields }) {
-    const finalSlug =
-        platform.slug && String(platform.slug).trim()
-            ? slugify(platform.slug)
-            : slugify(platform.name);
+/**
+ * ✅ Platform + Plans + (opsiyonel) Fields create (tek transaction)
+ * - plans default isActive: false
+ */
+async function createPlatformWithPlansAndFields({ platform, plans = [], fields = [], createdById }) {
+    const finalSlug = slugify(platform.slug || platform.name);
 
     return prisma.$transaction(async (tx) => {
-        // 1) platform update
+        const created = await tx.platform.create({
+            data: {
+                name: platform.name,
+                slug: finalSlug,
+                description: platform.description || null,
+                websiteUrl: platform.websiteUrl || null,
+                logoUrl: platform.logoUrl || null,
+                status: platform.status || "ACTIVE",
+                createdById: createdById || null,
+            },
+            select: { id: true },
+        });
+
+        // ✅ Plans
+        if (Array.isArray(plans) && plans.length > 0) {
+            const planRows = plans
+                .map((p, idx) => {
+                    const name = normalizePlanName(p?.name);
+                    if (!name) return null;
+
+                    return {
+                        platformId: created.id,
+                        name,
+                        // ✅ UI boş gönderirse false
+                        isActive: typeof p.isActive === "boolean" ? p.isActive : false,
+                        order: normalizeOrderOrDefault(p.order, idx + 1),
+                    };
+                })
+                .filter(Boolean);
+
+            if (planRows.length > 0) {
+                await tx.platformPlan.createMany({ data: planRows });
+            }
+        }
+
+        // ✅ Fields (opsiyonel)
+        if (Array.isArray(fields) && fields.length > 0) {
+            const fieldRows = fields
+                .map((f, idx) => {
+                    const key = normalizeKey(f.key);
+                    const label = String(f.label || "").trim();
+                    const type = String(f.type || "").trim();
+
+                    // boş satırları DB’ye yazmayalım
+                    if (!key || !label || !type) return null;
+
+                    const base = {
+                        platformId: created.id,
+                        key,
+                        label,
+                        type,
+                        required: !!f.required,
+                        order: normalizeOrderOrDefault(f.order, idx + 1),
+                    };
+
+                    if (isOptionType(type)) {
+                        return { ...base, optionsJson: Array.isArray(f.optionsJson) ? f.optionsJson : [] };
+                    }
+                    return { ...base, optionsJson: null };
+                })
+                .filter(Boolean);
+
+            if (fieldRows.length > 0) {
+                await tx.platformField.createMany({ data: fieldRows });
+            }
+        }
+
+        return tx.platform.findUnique({
+            where: { id: created.id },
+            select: {
+                id: true,
+                name: true,
+                slug: true,
+                description: true,
+                websiteUrl: true,
+                logoUrl: true,
+                status: true,
+                createdAt: true,
+                updatedAt: true,
+                plans: {
+                    orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+                    select: { id: true, name: true, isActive: true, order: true, createdAt: true, updatedAt: true },
+                },
+                fields: {
+                    orderBy: { order: "asc" },
+                    select: { id: true, key: true, label: true, type: true, required: true, optionsJson: true, order: true, createdAt: true, updatedAt: true },
+                },
+            },
+        });
+    });
+}
+
+/**
+ * ✅ Platform + Plans + (opsiyonel) Fields update (replace stratejisi)
+ * - plans default isActive: false
+ */
+async function updatePlatformWithPlansAndFieldsById({ id, platform, plans = [], fields = [] }) {
+    const finalSlug =
+        platform.slug && String(platform.slug).trim() ? slugify(platform.slug) : slugify(platform.name);
+
+    return prisma.$transaction(async (tx) => {
         await tx.platform.update({
             where: { id },
             data: {
@@ -154,44 +285,63 @@ async function updatePlatformWithFieldsById({ id, platform, fields }) {
             },
         });
 
-        // 2) fields replace
-        await tx.platformField.deleteMany({
-            where: { platformId: id },
-        });
+        // ✅ Plans replace
+        await tx.platformPlan.deleteMany({ where: { platformId: id } });
 
-        if (Array.isArray(fields) && fields.length > 0) {
-            const rows = fields.map((f, idx) => {
-                const key = normalizeKey(f.key);
+        if (Array.isArray(plans) && plans.length > 0) {
+            const planRows = plans
+                .map((p, idx) => {
+                    const name = normalizePlanName(p?.name);
+                    if (!name) return null;
 
-                const base = {
-                    platformId: id,
-                    key,
-                    label: f.label,
-                    type: f.type,
-                    required: !!f.required,
-                    order: typeof f.order === "number" ? f.order : idx + 1,
-                };
-
-                if (isOptionType(f.type)) {
                     return {
-                        ...base,
-                        optionsJson: f.optionsJson || [],
+                        platformId: id,
+                        name,
+                        isActive: typeof p.isActive === "boolean" ? p.isActive : false,
+                        order: normalizeOrderOrDefault(p.order, idx + 1),
                     };
-                }
+                })
+                .filter(Boolean);
 
-                return {
-                    ...base,
-                    optionsJson: null,
-                };
-            });
-
-            await tx.platformField.createMany({
-                data: rows,
-            });
+            if (planRows.length > 0) {
+                await tx.platformPlan.createMany({ data: planRows });
+            }
         }
 
-        // 3) geri dön: platform + fields
-        const updated = await tx.platform.findUnique({
+        // ✅ Fields replace (opsiyonel)
+        await tx.platformField.deleteMany({ where: { platformId: id } });
+
+        if (Array.isArray(fields) && fields.length > 0) {
+            const fieldRows = fields
+                .map((f, idx) => {
+                    const key = normalizeKey(f.key);
+                    const label = String(f.label || "").trim();
+                    const type = String(f.type || "").trim();
+
+                    if (!key || !label || !type) return null;
+
+                    const base = {
+                        platformId: id,
+                        key,
+                        label,
+                        type,
+                        required: !!f.required,
+                        order: normalizeOrderOrDefault(f.order, idx + 1),
+                    };
+
+                    if (isOptionType(type)) {
+                        return { ...base, optionsJson: Array.isArray(f.optionsJson) ? f.optionsJson : [] };
+                    }
+                    return { ...base, optionsJson: null };
+                })
+                .filter(Boolean);
+
+            if (fieldRows.length > 0) {
+                await tx.platformField.createMany({ data: fieldRows });
+            }
+        }
+
+        return tx.platform.findUnique({
             where: { id },
             select: {
                 id: true,
@@ -203,25 +353,16 @@ async function updatePlatformWithFieldsById({ id, platform, fields }) {
                 status: true,
                 createdAt: true,
                 updatedAt: true,
+                plans: {
+                    orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+                    select: { id: true, name: true, isActive: true, order: true, createdAt: true, updatedAt: true },
+                },
                 fields: {
                     orderBy: { order: "asc" },
-                    select: {
-                        id: true,
-                        platformId: true,
-                        key: true,
-                        label: true,
-                        type: true,
-                        required: true,
-                        optionsJson: true,
-                        order: true,
-                        createdAt: true,
-                        updatedAt: true,
-                    },
+                    select: { id: true, key: true, label: true, type: true, required: true, optionsJson: true, order: true, createdAt: true, updatedAt: true },
                 },
             },
         });
-
-        return updated;
     });
 }
 
@@ -236,7 +377,7 @@ async function updatePlatform(id, { name, slug, description, websiteUrl, logoUrl
     if (typeof status === "string") data.status = status;
 
     return prisma.platform.update({
-        where: { id: id },
+        where: { id },
         data,
         select: {
             id: true,
@@ -253,112 +394,18 @@ async function updatePlatform(id, { name, slug, description, websiteUrl, logoUrl
 }
 
 async function deletePlatform(id) {
-    // Şimdilik hard delete. İstersen soft delete'e çevirebiliriz.
     return prisma.platform.delete({
-        where: { id: id },
+        where: { id },
         select: { id: true },
-    });
-}
-
-async function createPlatformWithFields({ platform, fields, createdById }) {
-    const finalSlug = slugify(platform.slug || platform.name);
-
-    // Transaction: platform + fields birlikte
-    return prisma.$transaction(async (tx) => {
-        const createdPlatform = await tx.platform.create({
-            data: {
-                name: platform.name,
-                slug: finalSlug,
-                description: platform.description || null,
-                websiteUrl: platform.websiteUrl || null,
-                logoUrl: platform.logoUrl || null,
-                status: platform.status || "ACTIVE",
-                createdById: createdById || null,
-            },
-            select: {
-                id: true,
-                name: true,
-                slug: true,
-                description: true,
-                websiteUrl: true,
-                logoUrl: true,
-                status: true,
-                createdAt: true,
-                updatedAt: true,
-            },
-        });
-
-        if (fields && fields.length > 0) {
-            // order ve key normalize + optionsJson normalize
-            const rows = fields.map((f, idx) => {
-                const key = normalizeKey(f.key);
-                const base = {
-                    platformId: createdPlatform.id,
-                    key,
-                    label: f.label,
-                    type: f.type,
-                    required: !!f.required,
-                    order: typeof f.order === "number" ? f.order : idx + 1,
-                };
-
-                if (isOptionType(f.type)) {
-                    return {
-                        ...base,
-                        optionsJson: f.optionsJson || [],
-                    };
-                }
-
-                return {
-                    ...base,
-                    optionsJson: null,
-                };
-            });
-
-            await tx.platformField.createMany({
-                data: rows,
-            });
-        }
-
-        // Platform + fields birlikte dönmek istersen:
-        const platformWithFields = await tx.platform.findUnique({
-            where: { id: createdPlatform.id },
-            select: {
-                id: true,
-                name: true,
-                slug: true,
-                description: true,
-                websiteUrl: true,
-                logoUrl: true,
-                status: true,
-                createdAt: true,
-                updatedAt: true,
-                fields: {
-                    orderBy: { order: "asc" },
-                    select: {
-                        id: true,
-                        key: true,
-                        label: true,
-                        type: true,
-                        required: true,
-                        optionsJson: true,
-                        order: true,
-                        createdAt: true,
-                        updatedAt: true,
-                    },
-                },
-            },
-        });
-
-        return platformWithFields;
     });
 }
 
 module.exports = {
     listPlatforms,
     getPlatformById,
-    updatePlatformWithFieldsById,
     createPlatform,
     updatePlatform,
     deletePlatform,
-    createPlatformWithFields,
+    createPlatformWithPlansAndFields,
+    updatePlatformWithPlansAndFieldsById,
 };

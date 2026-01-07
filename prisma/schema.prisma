@@ -51,11 +51,35 @@ model Platform {
 
   fields PlatformField[]
 
-  // Opposite relation (Subscription.platform)
+  // ✅ New: Platform plans (planName yerine planId ilişkisi)
+  plans PlatformPlan[]
+
   subscriptions Subscription[]
 
   @@index([status])
   @@index([createdAt])
+}
+
+model PlatformPlan {
+  id String @id @default(uuid()) @db.Uuid
+
+  platformId String   @db.Uuid
+  platform   Platform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+
+  name     String
+  order    Int     @default(0)
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Opposite relation (Subscription.plan)
+  subscriptions Subscription[]
+
+  @@unique([platformId, name])
+  @@index([platformId])
+  @@index([order])
+  @@index([isActive])
 }
 
 enum PlatformFieldType {
@@ -102,6 +126,7 @@ enum SubscriptionStatus {
 }
 
 enum RepeatUnit {
+  WEEK
   MONTH
   YEAR
 }
@@ -109,24 +134,36 @@ enum RepeatUnit {
 model Subscription {
   id String @id @default(uuid()) @db.Uuid
 
-  userId String @db.Uuid
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
   platformId String   @db.Uuid
   platform   Platform @relation(fields: [platformId], references: [id], onDelete: Cascade)
 
-  status SubscriptionStatus @default(ACTIVE)
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // ✅ tekrar sistemi
+  // ✅ status + status changed time
+  status          SubscriptionStatus @default(ACTIVE)
+  statusChangedAt DateTime?
+
+  // ✅ repeat system
   repeatUnit     RepeatUnit @default(MONTH)
   repeatInterval Int        @default(1)
 
-  // ✅ startDate artık zorunlu
+  // ✅ standard dates
   startDate DateTime
   endDate   DateTime?
 
+  // ✅ standard money
   amount   Decimal? @db.Decimal(10, 2)
   currency String?
+
+  // ✅ plan: platformda plan varsa backend zorunlu yapacak
+  planId String?       @db.Uuid
+  plan   PlatformPlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
+
+  // ✅ standard account/contact/notes
+  accountEmail String?
+  accountPhone String?
+  notes        String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -136,8 +173,10 @@ model Subscription {
   @@index([userId])
   @@index([platformId])
   @@index([status])
+  @@index([statusChangedAt])
   @@index([repeatUnit])
   @@index([startDate])
+  @@index([planId])
 }
 
 model SubscriptionFieldValue {

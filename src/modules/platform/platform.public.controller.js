@@ -1,3 +1,4 @@
+// /modules/platform/platform.public.controller.js
 const prisma = require("../../config/prisma");
 
 async function listActive(req, res) {
@@ -10,10 +11,24 @@ async function listActive(req, res) {
                 name: true,
                 slug: true,
                 logoUrl: true,
+
+                // ✅ UI isterse "bu platformda aktif plan var mı?" gösterebilir
+                plans: {
+                    where: { isActive: true },
+                    select: { id: true }, // sadece saymak için
+                },
             },
         });
 
-        return res.status(200).json({ items });
+        return res.status(200).json({
+            items: items.map((p) => ({
+                id: p.id,
+                name: p.name,
+                slug: p.slug,
+                logoUrl: p.logoUrl,
+                activePlansCount: Array.isArray(p.plans) ? p.plans.length : 0,
+            })),
+        });
     } catch (err) {
         console.error("listActive error:", err);
         return res.status(500).json({ message: "Platformlar alınırken hata oluştu." });
@@ -24,12 +39,25 @@ async function getFieldsByPlatformId(req, res) {
     try {
         const platformId = String(req.params.id || "").trim();
 
-        // UUID doğrulama yapmak istersen burada isUuid ile kontrol edebilirsin.
         const platform = await prisma.platform.findUnique({
             where: { id: platformId },
             select: {
                 id: true,
                 name: true,
+
+                // ✅ AKTİF PLANLAR
+                plans: {
+                    where: { isActive: true },
+                    orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+                    select: {
+                        id: true,
+                        name: true,
+                        isActive: true,
+                        order: true,
+                    },
+                },
+
+                // ✅ EKSTRA FIELDS (sen şimdilik tutuyorsun)
                 fields: {
                     orderBy: { order: "asc" },
                     select: {
@@ -51,7 +79,8 @@ async function getFieldsByPlatformId(req, res) {
 
         return res.status(200).json({
             platform: { id: platform.id, name: platform.name },
-            fields: platform.fields,
+            plans: platform.plans || [], // ✅ yeni
+            fields: platform.fields || [],
         });
     } catch (err) {
         console.error("getFieldsByPlatformId error:", err);

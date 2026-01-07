@@ -26,19 +26,56 @@ const allowedTypes = new Set([
     "MULTISELECT",
 ]);
 
+function normalizeOrder(v, fallback) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function validatePlans(plans) {
+    if (plans === undefined) return ""; // optional
+    if (!Array.isArray(plans)) return "plans bir dizi olmalıdır.";
+
+    const nameSet = new Set();
+    for (let i = 0; i < plans.length; i++) {
+        const p = plans[i];
+        const row = i + 1;
+
+        if (!p || typeof p !== "object") return `Plan #${row}: geçersiz.`;
+        if (!p.name || !String(p.name).trim()) return `Plan #${row}: name zorunludur.`;
+
+        const name = String(p.name).trim();
+        const lower = name.toLowerCase();
+        if (nameSet.has(lower)) return `Plan #${row}: plan adı benzersiz olmalıdır.`;
+        nameSet.add(lower);
+
+        if (p.isActive !== undefined && typeof p.isActive !== "boolean") {
+            return `Plan #${row}: isActive boolean olmalıdır.`;
+        }
+        if (p.order !== undefined && !Number.isFinite(Number(p.order))) {
+            return `Plan #${row}: order sayı olmalıdır.`;
+        }
+    }
+
+    return "";
+}
+
 function validateCreateBody(body) {
-    // body: { platform: {...}, fields: [...] }
     if (!body || typeof body !== "object") return "Geçersiz istek gövdesi.";
 
     const platform = body.platform;
     const fields = body.fields;
+    const plans = body.plans;
 
     if (!platform || typeof platform !== "object") return "platform alanı zorunludur.";
     if (!platform.name || !String(platform.name).trim()) return "Platform name zorunludur.";
 
     if (fields !== undefined && !Array.isArray(fields)) return "fields bir dizi olmalıdır.";
 
-    if (!fields || fields.length === 0) return ""; // field zorunlu değilse problem yok
+    const plansErr = validatePlans(plans);
+    if (plansErr) return plansErr;
+
+    // fields opsiyonel
+    if (!fields || fields.length === 0) return "";
 
     const keySet = new Set();
 
@@ -55,6 +92,7 @@ function validateCreateBody(body) {
 
         if (!f.label || !String(f.label).trim()) return `Field #${row}: label zorunludur.`;
         if (!f.type || !String(f.type).trim()) return `Field #${row}: type zorunludur.`;
+        if (!allowedTypes.has(f.type)) return `Field #${row}: geçersiz type.`;
 
         if (isOptionType(f.type)) {
             const opts = f.optionsJson;
@@ -79,57 +117,54 @@ function validateCreateBody(body) {
 }
 
 function validateUpsertBody(body) {
-    if (!body || typeof body !== "object") return "Geçersiz istek gövdesi.";
-    const platform = body.platform;
-    const fields = body.fields;
-
-    if (!platform || typeof platform !== "object") return "platform alanı zorunludur.";
-    if (!platform.name || !String(platform.name).trim()) return "Platform name zorunludur.";
-    if (fields !== undefined && !Array.isArray(fields)) return "fields bir dizi olmalıdır.";
-
-    if (!fields || fields.length === 0) return "";
-
-    const keySet = new Set();
-
-    for (let i = 0; i < fields.length; i++) {
-        const f = fields[i];
-        const row = i + 1;
-
-        if (!f || typeof f !== "object") return `Field #${row}: geçersiz.`;
-
-        const key = normalizeKey(f.key);
-        if (!key) return `Field #${row}: key zorunludur.`;
-        if (keySet.has(key)) return `Field #${row}: key benzersiz olmalıdır.`;
-        keySet.add(key);
-
-        if (!f.label || !String(f.label).trim()) return `Field #${row}: label zorunludur.`;
-        if (!f.type || !String(f.type).trim()) return `Field #${row}: type zorunludur.`;
-        if (!allowedTypes.has(f.type)) return `Field #${row}: geçersiz type.`;
-
-        if (isOptionType(f.type)) {
-            const opts = f.optionsJson;
-            if (!Array.isArray(opts) || opts.length === 0) {
-                return `Field #${row}: options zorunludur.`;
-            }
-            const valueSet = new Set();
-            for (let j = 0; j < opts.length; j++) {
-                const opt = opts[j];
-                const optRow = j + 1;
-
-                if (!opt || typeof opt !== "object") return `Field #${row} Option #${optRow}: geçersiz.`;
-                if (!opt.label || !String(opt.label).trim()) return `Field #${row} Option #${optRow}: label zorunludur.`;
-                if (!opt.value || !String(opt.value).trim()) return `Field #${row} Option #${optRow}: value zorunludur.`;
-
-                const v = String(opt.value).trim();
-                if (valueSet.has(v)) return `Field #${row}: option value benzersiz olmalıdır.`;
-                valueSet.add(v);
-            }
-        }
-    }
-
-    return "";
+    return validateCreateBody(body);
 }
 
+// ------- helpers: payload clean -------
+function cleanPlans(plans = []) {
+    if (!Array.isArray(plans)) return [];
+    const out = [];
+    for (let i = 0; i < plans.length; i++) {
+        const p = plans[i];
+        const name = String(p?.name || "").trim();
+        if (!name) continue;
+
+        out.push({
+            name,
+            isActive: typeof p.isActive === "boolean" ? p.isActive : false, // default false
+            order: normalizeOrder(p.order, i + 1),
+        });
+    }
+    return out;
+}
+
+function cleanFields(fields = []) {
+    if (!Array.isArray(fields)) return [];
+
+    // boş/yarım satırları at
+    const filtered = fields.filter((f) => {
+        if (!f || typeof f !== "object") return false;
+        const key = normalizeKey(f.key);
+        const label = String(f.label || "").trim();
+        const type = String(f.type || "").trim();
+        const hasOptions = Array.isArray(f.optionsJson) && f.optionsJson.length > 0;
+        const required = !!f.required;
+
+        const hasAny = !!key || !!label || !!type || hasOptions || required;
+        return hasAny;
+    });
+
+    return filtered.map((f, idx) => ({
+        key: normalizeKey(f.key),
+        label: String(f.label || "").trim(),
+        type: f.type,
+        required: !!f.required,
+        order: normalizeOrder(f.order, idx + 1),
+        optionsJson: f.optionsJson ?? null,
+    }));
+}
+
+// ------- controllers -------
 async function list(req, res) {
     try {
         const { search, status, page, limit } = req.query;
@@ -167,6 +202,45 @@ async function getById(req, res) {
     }
 }
 
+async function create(req, res) {
+    try {
+        const body = req.body;
+
+        const validationError = validateCreateBody(body);
+        if (validationError) {
+            return res.status(400).json({ message: validationError });
+        }
+
+        const p = body.platform;
+        const fields = cleanFields(body.fields || []);
+        const plans = cleanPlans(body.plans || []);
+
+        const created = await platformService.createPlatformWithPlansAndFields({
+            platform: {
+                name: String(p.name).trim(),
+                slug: p.slug ? String(p.slug).trim() : "",
+                description: p.description ? String(p.description).trim() : "",
+                websiteUrl: p.websiteUrl ? String(p.websiteUrl).trim() : "",
+                logoUrl: p.logoUrl ? String(p.logoUrl).trim() : "",
+                status: p.status || "ACTIVE",
+            },
+            plans,
+            fields,
+            createdById: req.user.id,
+        });
+
+        return res.status(201).json({ platform: created });
+    } catch (err) {
+        console.error("Admin platform create error:", err);
+
+        if (err.code === "P2002") {
+            return res.status(409).json({ message: "Benzersiz alan çakışması (slug veya plan/field name) oluştu." });
+        }
+
+        return res.status(500).json({ message: "Platform oluşturulurken bir hata oluştu." });
+    }
+}
+
 async function updateById(req, res) {
     try {
         const id = req.params.id;
@@ -185,9 +259,10 @@ async function updateById(req, res) {
         }
 
         const p = req.body.platform;
-        const fields = req.body.fields || [];
+        const fields = cleanFields(req.body.fields || []);
+        const plans = cleanPlans(req.body.plans || []);
 
-        const updated = await platformService.updatePlatformWithFieldsById({
+        const updated = await platformService.updatePlatformWithPlansAndFieldsById({
             id,
             platform: {
                 name: String(p.name).trim(),
@@ -197,14 +272,8 @@ async function updateById(req, res) {
                 logoUrl: p.logoUrl ? String(p.logoUrl).trim() : "",
                 status: p.status || "ACTIVE",
             },
-            fields: fields.map((f, idx) => ({
-                key: f.key,
-                label: String(f.label).trim(),
-                type: f.type,
-                required: !!f.required,
-                order: typeof f.order === "number" ? f.order : idx + 1,
-                optionsJson: f.optionsJson ?? null,
-            })),
+            plans,
+            fields,
         });
 
         return res.status(200).json({ platform: updated });
@@ -212,89 +281,10 @@ async function updateById(req, res) {
         console.error("Admin platform updateById error:", err);
 
         if (err.code === "P2002") {
-            // slug unique veya (platformId,key) unique çakışması
-            return res.status(409).json({ message: "Benzersiz alan çakışması (slug veya field key) oluştu." });
+            return res.status(409).json({ message: "Benzersiz alan çakışması (slug veya plan/field name) oluştu." });
         }
 
         return res.status(500).json({ message: "Platform güncellenirken hata oluştu." });
-    }
-}
-
-async function create(req, res) {
-    try {
-        // Yeni format: { platform: {...}, fields: [...] }
-        const body = req.body;
-
-        const validationError = validateCreateBody(body);
-        if (validationError) {
-            return res.status(400).json({ message: validationError });
-        }
-
-        const platform = body.platform;
-        const fields = body.fields || [];
-
-        const created = await platformService.createPlatformWithFields({
-            platform: {
-                name: String(platform.name).trim(),
-                slug: platform.slug ? String(platform.slug).trim() : "",
-                description: platform.description ? String(platform.description).trim() : "",
-                websiteUrl: platform.websiteUrl ? String(platform.websiteUrl).trim() : "",
-                logoUrl: platform.logoUrl ? String(platform.logoUrl).trim() : "",
-                status: platform.status || "ACTIVE",
-            },
-            fields: fields.map((f, idx) => ({
-                key: f.key,
-                label: String(f.label).trim(),
-                type: f.type,
-                required: !!f.required,
-                order: typeof f.order === "number" ? f.order : idx + 1,
-                optionsJson: f.optionsJson ?? null,
-            })),
-            createdById: req.user.id,
-        });
-
-        return res.status(201).json({ platform: created });
-    } catch (err) {
-        console.error("Admin platform create (with fields) error:", err);
-
-        // Prisma unique slug
-        if (err.code === "P2002") {
-            // platform.slug veya field unique (platformId,key) olabilir
-            return res.status(409).json({ message: "Benzersiz alan çakışması (slug veya field key) oluştu." });
-        }
-
-        return res.status(500).json({ message: "Platform oluşturulurken bir hata oluştu." });
-    }
-}
-
-async function update(req, res) {
-    try {
-        const { id } = req.params;
-        const { name, slug, description, websiteUrl, logoUrl, status } = req.body;
-
-        const platform = await platformService.updatePlatform(id, {
-            name,
-            slug,
-            description,
-            websiteUrl,
-            logoUrl,
-            status,
-        });
-
-        return res.status(200).json({ platform });
-    } catch (err) {
-        console.error("Admin platform update error:", err);
-
-        if (err.code === "P2002") {
-            return res.status(409).json({ message: "Bu slug zaten kullanımda." });
-        }
-
-        // Prisma kaydı bulamadıysa genelde P2025 olur
-        if (err.code === "P2025") {
-            return res.status(404).json({ message: "Platform bulunamadı." });
-        }
-
-        return res.status(500).json({ message: "Platform güncellenirken bir hata oluştu." });
     }
 }
 
@@ -324,6 +314,5 @@ module.exports = {
     getById,
     updateById,
     create,
-    update,
     remove,
 };

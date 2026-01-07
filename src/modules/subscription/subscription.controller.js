@@ -1,54 +1,123 @@
-// src/modules/subscription/subscription.controller.js
 const service = require("./subscription.service");
+
+function normalizeRepeatUnit(v) {
+  const s = String(v || "").trim().toUpperCase();
+  return s === "WEEK" || s === "MONTH" || s === "YEAR" ? s : undefined;
+}
+
+function normalizeRepeatInterval(v) {
+  if (v === null || v === undefined || v === "") return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 120) return undefined;
+  return n;
+}
+
+function normalizeStringOrNull(v) {
+  const s = String(v ?? "").trim();
+  return s ? s : null;
+}
+
+function normalizeCurrencyOrNull(v) {
+  const s = String(v ?? "").trim().toUpperCase();
+  return s ? s : null;
+}
+
+// ✅ Prisma Decimal için string bekliyoruz: "12.50"
+function normalizeDecimalStringOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const s0 = String(v).trim();
+  if (!s0) return null;
+
+  // kullanıcı "12,50" yazarsa tolere et
+  const s = s0.replace(",", ".");
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+
+  return n.toFixed(2);
+}
+
+function normalizeValuesOrThrow(values) {
+  if (values === undefined) return [];
+  if (!Array.isArray(values)) {
+    const e = new Error("VALUES_ARRAY_REQUIRED");
+    e.code = "VALUES_ARRAY_REQUIRED";
+    throw e;
+  }
+  return values;
+}
 
 async function create(req, res) {
   try {
     const userId = req.user.id;
 
-    // ✅ Yeni sistem: billingPeriod + billingDay yok
     const {
       platformId,
       values,
+
       status,
-      repeatUnit,       // "MONTH" | "YEAR"
-      repeatInterval,   // 1..N
-      startDate,        // zorunlu
+      repeatUnit,
+      repeatInterval,
+      startDate,
       endDate,
+
       amount,
       currency,
+
+      // ✅ yeni standart alanlar
+      planId,
+      accountEmail,
+      accountPhone,
+      notes,
     } = req.body;
 
     if (!platformId) {
       return res.status(400).json({ message: "platformId zorunludur." });
     }
 
-    if (!Array.isArray(values)) {
-      return res.status(400).json({ message: "values bir dizi olmalıdır." });
-    }
+    const safeValues = normalizeValuesOrThrow(values);
 
-    // ✅ startDate artık temel
     if (!startDate) {
       return res.status(400).json({ message: "startDate zorunludur." });
+    }
+
+    const unit = normalizeRepeatUnit(repeatUnit);
+    const interval = normalizeRepeatInterval(repeatInterval);
+    if (repeatUnit !== undefined && !unit) {
+      return res.status(400).json({ message: "repeatUnit geçersiz. WEEK | MONTH | YEAR olmalıdır." });
+    }
+    if (repeatInterval !== undefined && interval === undefined) {
+      return res.status(400).json({ message: "repeatInterval geçersiz. En az 1 olmalıdır." });
     }
 
     const created = await service.createSubscription({
       userId,
       platformId: String(platformId).trim(),
-      values,
+      values: safeValues,
       tracking: {
         status,
-        repeatUnit,
-        repeatInterval,
+        repeatUnit: unit,
+        repeatInterval: interval,
         startDate,
         endDate,
-        amount,
-        currency,
+
+        // ✅ Decimal string
+        amount: normalizeDecimalStringOrNull(amount),
+        currency: normalizeCurrencyOrNull(currency),
+
+        planId: normalizeStringOrNull(planId),
+        accountEmail: normalizeStringOrNull(accountEmail),
+        accountPhone: normalizeStringOrNull(accountPhone),
+        notes: normalizeStringOrNull(notes),
       },
     });
 
     return res.status(201).json({ subscription: created });
   } catch (err) {
     console.error("Create subscription error:", err);
+
+    if (err.code === "VALUES_ARRAY_REQUIRED") {
+      return res.status(400).json({ message: "values bir dizi olmalıdır." });
+    }
 
     if (err.code === "P2002") {
       return res.status(409).json({ message: "Benzersiz alan çakışması oluştu." });
@@ -66,13 +135,20 @@ async function create(req, res) {
       return res.status(400).json({ message: "startDate zorunludur." });
     }
 
-    // service bazen REQUIRED_FIELD_MISSING:key şeklinde atıyordu, bazen meta ile
+    if (err.code === "PLAN_REQUIRED") {
+      return res.status(400).json({ message: "Bu platformda plan seçimi zorunludur." });
+    }
+
+    if (err.code === "INVALID_PLAN") {
+      return res.status(400).json({ message: "Geçersiz plan seçimi." });
+    }
+
+    // ✅ hem meta hem message formatı
     if (String(err.code || "").startsWith("REQUIRED_FIELD_MISSING")) {
-      const keyFromCode = String(err.message || "").includes(":")
+      const keyFromMessage = String(err.message || "").includes(":")
         ? String(err.message).split(":")[1]
         : "";
-
-      const key = err.meta?.key || keyFromCode || err.meta?.label || "";
+      const key = err.meta?.label || err.meta?.key || keyFromMessage || "";
       return res.status(400).json({ message: `Zorunlu alan eksik: ${key}`.trim() });
     }
 
@@ -113,42 +189,66 @@ async function updateMineById(req, res) {
 
     const {
       values,
+
       status,
       repeatUnit,
       repeatInterval,
       startDate,
       endDate,
+
       amount,
       currency,
+
+      // ✅ yeni standart alanlar
+      planId,
+      accountEmail,
+      accountPhone,
+      notes,
     } = req.body;
 
-    if (!Array.isArray(values)) {
-      return res.status(400).json({ message: "values bir dizi olmalıdır." });
-    }
+    const safeValues = normalizeValuesOrThrow(values);
 
-    // ✅ yeni sistemde startDate önemli; update'te de zorunlu tutuyoruz
     if (!startDate) {
       return res.status(400).json({ message: "startDate zorunludur." });
+    }
+
+    const unit = normalizeRepeatUnit(repeatUnit);
+    const interval = normalizeRepeatInterval(repeatInterval);
+    if (repeatUnit !== undefined && !unit) {
+      return res.status(400).json({ message: "repeatUnit geçersiz. WEEK | MONTH | YEAR olmalıdır." });
+    }
+    if (repeatInterval !== undefined && interval === undefined) {
+      return res.status(400).json({ message: "repeatInterval geçersiz. En az 1 olmalıdır." });
     }
 
     const updated = await service.updateMySubscription({
       userId,
       subscriptionId: id,
-      values,
+      values: safeValues,
       tracking: {
         status,
-        repeatUnit,
-        repeatInterval,
+        repeatUnit: unit,
+        repeatInterval: interval,
         startDate,
         endDate,
-        amount,
-        currency,
+
+        amount: normalizeDecimalStringOrNull(amount),
+        currency: normalizeCurrencyOrNull(currency),
+
+        planId: normalizeStringOrNull(planId),
+        accountEmail: normalizeStringOrNull(accountEmail),
+        accountPhone: normalizeStringOrNull(accountPhone),
+        notes: normalizeStringOrNull(notes),
       },
     });
 
     return res.status(200).json({ subscription: updated });
   } catch (err) {
     console.error("Update subscription error:", err);
+
+    if (err.code === "VALUES_ARRAY_REQUIRED") {
+      return res.status(400).json({ message: "values bir dizi olmalıdır." });
+    }
 
     if (err.code === "NOT_FOUND") {
       return res.status(404).json({ message: "Subscription bulunamadı." });
@@ -158,9 +258,20 @@ async function updateMineById(req, res) {
       return res.status(400).json({ message: "startDate zorunludur." });
     }
 
-    if (err.code === "REQUIRED_FIELD_MISSING") {
-      const labelOrKey = err.meta?.label || err.meta?.key || "";
-      return res.status(400).json({ message: `Zorunlu alan eksik: ${labelOrKey}`.trim() });
+    if (err.code === "PLAN_REQUIRED") {
+      return res.status(400).json({ message: "Bu platformda plan seçimi zorunludur." });
+    }
+
+    if (err.code === "INVALID_PLAN") {
+      return res.status(400).json({ message: "Geçersiz plan seçimi." });
+    }
+
+    if (String(err.code || "").startsWith("REQUIRED_FIELD_MISSING")) {
+      const keyFromMessage = String(err.message || "").includes(":")
+        ? String(err.message).split(":")[1]
+        : "";
+      const key = err.meta?.label || err.meta?.key || keyFromMessage || "";
+      return res.status(400).json({ message: `Zorunlu alan eksik: ${key}`.trim() });
     }
 
     return res.status(500).json({ message: "Subscription güncellenirken hata oluştu." });

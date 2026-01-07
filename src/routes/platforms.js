@@ -4,9 +4,7 @@ const platformsController = require("../modules/platform/platform.public.control
 
 const router = express.Router();
 
-// user login zorunlu olsun istiyorsan authMiddleware kalsın
 router.get("/", authMiddleware, platformsController.listActive);
-
 router.get("/:id/fields", authMiddleware, platformsController.getFieldsByPlatformId);
 
 module.exports = router;

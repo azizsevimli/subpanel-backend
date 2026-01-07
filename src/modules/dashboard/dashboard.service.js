@@ -16,21 +16,16 @@ function startOfMonth(d) {
 }
 
 function endOfMonth(d) {
-    // ayın son günü 23:59:59.999
     return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
 }
 
-// Hedef ayda gün taşması olursa (31 -> 30 gibi) clamp
 function addMonthsClamped(date, monthsToAdd) {
     const y = date.getFullYear();
     const m = date.getMonth();
     const day = date.getDate();
 
-    // önce hedef ayın 1'ine git
     const target = new Date(y, m + monthsToAdd, 1, 0, 0, 0, 0);
-    // hedef ayın son gününü bul
     const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
-    // clamp
     target.setDate(Math.min(day, lastDay));
     return target;
 }
@@ -39,12 +34,20 @@ function addYearsClamped(date, yearsToAdd) {
     return addMonthsClamped(date, yearsToAdd * 12);
 }
 
-// Yeni sistem: repeatUnit/repeatInterval ile aylık normalize
+// ✅ Decimal -> number güvenli
+function decimalToNumber(v) {
+    if (v == null) return null;
+    const s = typeof v === "string" ? v : String(v);
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : null;
+}
+
+// ✅ Yeni sistem: repeatUnit/repeatInterval ile aylık normalize
 function normalizeMonthlyAmount(sub) {
     if (sub.amount == null || !sub.currency) return null;
 
-    const amount = Number(sub.amount);
-    if (!Number.isFinite(amount) || amount < 0) return null;
+    const amount = decimalToNumber(sub.amount);
+    if (amount == null || amount < 0) return null;
 
     const interval = Number(sub.repeatInterval ?? 1);
     if (!Number.isInteger(interval) || interval < 1) return null;
@@ -56,37 +59,41 @@ function normalizeMonthlyAmount(sub) {
     return null;
 }
 
-// Subscription belirli ay aralığında "aktif" mi?
-function isActiveInMonth(sub, monthStart, monthEnd) {
-    if (sub.status !== "ACTIVE") return false;
+// ✅ efektif end (endDate vs statusChangedAt)
+function getEffectiveEndDate(sub) {
+    const end = sub.endDate ? new Date(sub.endDate) : null;
+    const sc = sub.statusChangedAt ? new Date(sub.statusChangedAt) : null;
 
+    if (end && sc) return end.getTime() <= sc.getTime() ? end : sc;
+    return end || sc || null;
+}
+
+// ✅ Subscription belirli ay aralığında aktif mi? (geçmişi de kapsar)
+// - startDate..min(endDate, statusChangedAt)
+function isActiveInMonthWindow(sub, monthStart, monthEnd) {
     const s = sub.startDate ? new Date(sub.startDate) : null;
-    const e = sub.endDate ? new Date(sub.endDate) : null;
-
-    // startDate yoksa: güvenli tarafta kal
     if (!s) return false;
 
-    // startDate ay bitişinden sonra ise aktif değil
-    if (s.getTime() > monthEnd.getTime()) return false;
+    const effectiveEnd = getEffectiveEndDate(sub); // null olabilir
 
-    // endDate ay başlangıcından önce ise aktif değil
-    if (e && e.getTime() < monthStart.getTime()) return false;
+    if (s.getTime() > monthEnd.getTime()) return false;
+    if (effectiveEnd && effectiveEnd.getTime() < monthStart.getTime()) return false;
 
     return true;
 }
 
-// Range içinde renewal tarihlerini üret (MVP: loop)
+// Range içinde renewal tarihlerini üret (statusChangedAt/endDate’e göre durur)
 function getRenewalDatesInRange(sub, rangeStart, rangeEnd) {
     const s = sub.startDate ? new Date(sub.startDate) : null;
     if (!s) return [];
 
-    const hardEnd = sub.endDate ? new Date(sub.endDate) : null;
+    const effectiveEnd = getEffectiveEndDate(sub); // null olabilir
 
-    const unit = sub.repeatUnit; // MONTH/YEAR
+    const unit = sub.repeatUnit;
     const interval = Number(sub.repeatInterval ?? 1);
     if (!unit || !Number.isInteger(interval) || interval < 1) return [];
 
-    // ✅ İlk ödeme günü = startDate (istenirse 1 period sonrası yapılabilir)
+    // ✅ ödeme günü = startDate + interval, +interval...
     let cur = new Date(s);
 
     // rangeStart'tan önceyse ileri sar
@@ -98,13 +105,14 @@ function getRenewalDatesInRange(sub, rangeStart, rangeEnd) {
         else return [];
     }
 
-    // range içinde kalanları topla
     const dates = [];
     guard = 0;
+
     while (cur.getTime() <= rangeEnd.getTime() && guard < 2000) {
         guard++;
 
-        if (hardEnd && cur.getTime() > hardEnd.getTime()) break;
+        // ✅ efektif end’i aşma
+        if (effectiveEnd && cur.getTime() > effectiveEnd.getTime()) break;
 
         if (cur.getTime() >= rangeStart.getTime()) {
             dates.push(new Date(cur));
@@ -119,7 +127,6 @@ function getRenewalDatesInRange(sub, rangeStart, rangeEnd) {
 }
 
 async function getMyDashboardSummary(userId) {
-    // ✅ count+distinct yerine güvenli yöntem
     const [totalSubscriptions, activeSubscriptions, uniquePlatformRows] = await Promise.all([
         prisma.subscription.count({ where: { userId } }),
         prisma.subscription.count({ where: { userId, status: "ACTIVE" } }),
@@ -139,25 +146,26 @@ async function getMyDashboardSummary(userId) {
         select: {
             id: true,
             status: true,
+            statusChangedAt: true,
+
             createdAt: true,
             startDate: true,
             endDate: true,
+
             repeatUnit: true,
             repeatInterval: true,
+
             amount: true,
             currency: true,
+
             platform: {
-                select: {
-                    id: true,
-                    name: true,
-                    slug: true,
-                    logoUrl: true,
-                },
+                select: { id: true, name: true, slug: true, logoUrl: true },
             },
-            values: { select: { id: true } }, // count için
+            values: { select: { id: true } },
         },
     });
 
+    // ✅ Monthly spend estimate: sadece şu an ACTIVE olanlar için (özet KPI)
     let monthlySpend = null;
 
     const allActiveWithAmount = await prisma.subscription.findMany({
@@ -172,6 +180,9 @@ async function getMyDashboardSummary(userId) {
             currency: true,
             repeatUnit: true,
             repeatInterval: true,
+            startDate: true,
+            endDate: true,
+            statusChangedAt: true,
         },
     });
 
@@ -197,13 +208,19 @@ async function getMyDashboardSummary(userId) {
         recentSubscriptions: recent.map((s) => ({
             id: s.id,
             status: s.status,
+            statusChangedAt: s.statusChangedAt,
+
             createdAt: s.createdAt,
             startDate: s.startDate,
             endDate: s.endDate,
+
             repeatUnit: s.repeatUnit,
             repeatInterval: s.repeatInterval,
-            amount: s.amount,
+
+            // ✅ Decimal -> string (frontend’de Number() ile kullanılabilir)
+            amount: s.amount != null ? String(s.amount) : null,
             currency: s.currency,
+
             platform: s.platform,
             fieldsCount: Array.isArray(s.values) ? s.values.length : 0,
         })),
@@ -211,30 +228,30 @@ async function getMyDashboardSummary(userId) {
 }
 
 async function getMyDashboardCharts({ userId, months }) {
-    // Son N ay aralığı
     const now = new Date();
     const currentMonthStart = startOfMonth(now);
     const fromMonthStart = addMonthsClamped(currentMonthStart, -(months - 1));
 
-    // Bu endpoint için gerekli alanları çek
     const subs = await prisma.subscription.findMany({
         where: { userId },
         select: {
             id: true,
             status: true,
+            statusChangedAt: true,
+
             startDate: true,
             endDate: true,
+
             amount: true,
             currency: true,
             repeatUnit: true,
             repeatInterval: true,
-            platform: {
-                select: { id: true, name: true, logoUrl: true },
-            },
+
+            platform: { select: { id: true, name: true, logoUrl: true } },
         },
     });
 
-    // 1) Monthly spend trend
+    // 1) Monthly spend trend (geçmiş aylar dahil, statusChangedAt sonrası hariç)
     const monthsList = [];
     for (let i = 0; i < months; i++) {
         const mStart = addMonthsClamped(fromMonthStart, i);
@@ -246,6 +263,7 @@ async function getMyDashboardCharts({ userId, months }) {
     }
 
     const currencySeriesMap = new Map(); // currency -> Map(monthKey -> amount)
+
     for (const sub of subs) {
         const monthly = normalizeMonthlyAmount(sub);
         if (monthly == null) continue;
@@ -256,7 +274,7 @@ async function getMyDashboardCharts({ userId, months }) {
         if (!currencySeriesMap.has(cur)) currencySeriesMap.set(cur, new Map());
 
         for (const m of monthsList) {
-            if (!isActiveInMonth(sub, m.start, m.end)) continue;
+            if (!isActiveInMonthWindow(sub, m.start, m.end)) continue;
             const mm = currencySeriesMap.get(cur);
             mm.set(m.key, safeNumber(mm.get(m.key) || 0) + safeNumber(monthly));
         }
@@ -270,15 +288,16 @@ async function getMyDashboardCharts({ userId, months }) {
         })),
     }));
 
-    // 2) This month spend by platform (currency bazlı)
+    // 2) This month spend by platform (bu ay penceresi + statusChangedAt sonrası hariç)
     const thisMonthStart = currentMonthStart;
     const thisMonthEnd = endOfMonth(now);
 
     const byPlatformMap = new Map(); // platformId -> { platform, currencies: Map }
+
     for (const sub of subs) {
         const monthly = normalizeMonthlyAmount(sub);
         if (monthly == null) continue;
-        if (!isActiveInMonth(sub, thisMonthStart, thisMonthEnd)) continue;
+        if (!isActiveInMonthWindow(sub, thisMonthStart, thisMonthEnd)) continue;
 
         const cur = String(sub.currency || "").trim().toUpperCase();
         if (!cur) continue;
@@ -328,12 +347,10 @@ async function getMyDashboardCharts({ userId, months }) {
         return { currency, items };
     });
 
-    // 3) Renewals per week (this month)
+    // 3) Renewals per week (this month) - bu ay penceresi içindeki renewal sayısı
     const renewalsByWeek = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
 
     for (const sub of subs) {
-        if (sub.status !== "ACTIVE") continue;
-
         const dates = getRenewalDatesInRange(sub, thisMonthStart, thisMonthEnd);
 
         for (const d of dates) {

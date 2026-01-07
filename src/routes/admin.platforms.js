@@ -5,7 +5,6 @@ const platformAdminController = require("../modules/platform/platform.admin.cont
 
 const router = express.Router();
 
-// /api/admin/platforms
 router.get("/", authMiddleware, adminMiddleware, platformAdminController.list);
 router.get("/:id", authMiddleware, adminMiddleware, platformAdminController.getById);
 router.post("/", authMiddleware, adminMiddleware, platformAdminController.create);

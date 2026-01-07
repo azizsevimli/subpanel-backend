@@ -51,24 +51,24 @@ function addYearsClampUtc(dateUtc, years) {
     return new Date(Date.UTC(y, m0, day, 0, 0, 0));
 }
 
-function addDaysUtc(dateUtc, days) {
-    const d = new Date(dateUtc);
-    d.setUTCDate(d.getUTCDate() + days);
-    return startOfDayUtc(d);
-}
-
 function inRangeUtc(dateUtc, fromUtc, toUtc) {
     return dateUtc.getTime() >= fromUtc.getTime() && dateUtc.getTime() <= toUtc.getTime();
 }
 
-function clampByEndDate(endDate, candidateUtc) {
-    if (!endDate) return candidateUtc;
-    const endUtc = startOfDayUtc(endDate);
-    return candidateUtc.getTime() <= endUtc.getTime() ? candidateUtc : null;
-}
-
 function buildEventId(type, subscriptionId, ymd) {
     return `${type}:${subscriptionId}:${ymd}`;
+}
+
+// ✅ Yeni kural: subscription’ın efektif bitiş tarihi
+// - endDate varsa endDate
+// - statusChangedAt varsa (PAUSED/CANCELED olduğunda set ediliyor) o tarih
+// - ikisi varsa min olan
+function getEffectiveEndUtc(sub) {
+    const endUtc = sub.endDate ? startOfDayUtc(sub.endDate) : null;
+    const scUtc = sub.statusChangedAt ? startOfDayUtc(sub.statusChangedAt) : null;
+
+    if (endUtc && scUtc) return endUtc.getTime() <= scUtc.getTime() ? endUtc : scUtc;
+    return endUtc || scUtc || null;
 }
 
 async function getCalendarEvents({ userId, from, to }) {
@@ -81,14 +81,13 @@ async function getCalendarEvents({ userId, from, to }) {
     const fromUtc = parseYmdToUtcDate(from);
     const toUtc = parseYmdToUtcDate(to);
 
+    // ✅ Artık status filter yok: çünkü CANCELED/PAUSED olsa bile geçmişte event üretmek gerekebilir
     const subs = await prisma.subscription.findMany({
-        where: {
-            userId,
-            status: { in: ["ACTIVE", "PAUSED"] },
-        },
+        where: { userId },
         select: {
             id: true,
             status: true,
+            statusChangedAt: true,
             repeatUnit: true,
             repeatInterval: true,
             startDate: true,
@@ -102,58 +101,58 @@ async function getCalendarEvents({ userId, from, to }) {
     const events = [];
 
     for (const s of subs) {
-        // startDate zorunlu; ama DB’de eski kayıtlar kalmış olabilir diye koruyalım
         if (!s.startDate) continue;
 
         const platformName = s.platform?.name || "Platform";
-        const amount = s.amount;
+        const amount = s.amount != null ? String(s.amount) : null; // Decimal -> string
         const currency = s.currency || "";
 
         const startUtc = startOfDayUtc(s.startDate);
-        const endDate = s.endDate ? startOfDayUtc(s.endDate) : null;
+        const effectiveEndUtc = getEffectiveEndUtc(s); // null olabilir
 
-        // START event
+        // ✅ Eğer efektif end, start'tan önceyse hiç event üretme
+        if (effectiveEndUtc && effectiveEndUtc.getTime() < startUtc.getTime()) continue;
+
+        // START event (startDate range içindeyse ve efektif end engellemiyorsa)
         if (inRangeUtc(startUtc, fromUtc, toUtc)) {
-            const ymd = toYmdUtc(startUtc);
-            events.push({
-                id: buildEventId("START", s.id, ymd),
-                type: "START",
-                subscriptionId: s.id,
-                date: ymd,
-                title: `${platformName} • Start`,
-                status: s.status,
-                amount,
-                currency,
-                platform: s.platform,
-            });
+            if (!effectiveEndUtc || startUtc.getTime() <= effectiveEndUtc.getTime()) {
+                const ymd = toYmdUtc(startUtc);
+                events.push({
+                    id: buildEventId("START", s.id, ymd),
+                    type: "START",
+                    subscriptionId: s.id,
+                    date: ymd,
+                    title: `${platformName} • Start`,
+                    status: s.status,
+                    amount,
+                    currency,
+                    platform: s.platform,
+                });
+            }
         }
 
         const unit = s.repeatUnit || "MONTH";
         const interval = Number.isInteger(s.repeatInterval) && s.repeatInterval > 0 ? s.repeatInterval : 1;
 
-        // İlk renewal: startDate + interval
-        const addInterval = (d) =>
-            unit === "YEAR" ? addYearsClampUtc(d, interval) : addMonthsClampUtc(d, interval);
+        const addInterval = (d) => (unit === "YEAR" ? addYearsClampUtc(d, interval) : addMonthsClampUtc(d, interval));
 
-        // renewal günlerini aralığa yaklaştır:
-        // cursor = firstRenewal
+        // ✅ İlk renewal: startDate + interval
         let cursor = addInterval(startUtc);
 
-        // from'dan önceyse ileri sar
-        // (çok uzun geçmişe gitmemek için güvenlik limiti koyuyoruz)
+        // from'dan önceyse ileri sar (çok uzun geçmişe gitmemek için guard)
         let guard = 0;
-        while (cursor.getTime() < fromUtc.getTime() && guard < 240) { // max 240 adım
+        while (cursor.getTime() < fromUtc.getTime() && guard < 240) {
             cursor = addInterval(cursor);
             guard++;
         }
 
         guard = 0;
         while (cursor.getTime() <= toUtc.getTime() && guard < 240) {
-            const bounded = clampByEndDate(endDate, cursor);
-            if (!bounded) break;
+            // ✅ efektif end varsa, onu aşınca dur
+            if (effectiveEndUtc && cursor.getTime() > effectiveEndUtc.getTime()) break;
 
-            if (inRangeUtc(bounded, fromUtc, toUtc)) {
-                const ymd = toYmdUtc(bounded);
+            if (inRangeUtc(cursor, fromUtc, toUtc)) {
+                const ymd = toYmdUtc(cursor);
                 events.push({
                     id: buildEventId("RENEWAL", s.id, ymd),
                     type: "RENEWAL",
@@ -165,11 +164,6 @@ async function getCalendarEvents({ userId, from, to }) {
                     currency,
                     platform: s.platform,
                 });
-
-                // İstersen dönem bitişini de event olarak ekleyebilirsin:
-                // periodEnd = renewal - 1 gün
-                // const periodEnd = addDaysUtc(bounded, -1);
-                // ...
             }
 
             cursor = addInterval(cursor);
